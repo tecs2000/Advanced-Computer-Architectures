@@ -1,0 +1,10 @@
+# Log files
+*.log
+*.txt
+
+# Build files
+*.exe
+*.out
+
+# Build directories
+lab*/build/

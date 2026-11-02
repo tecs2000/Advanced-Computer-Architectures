@@ -98,9 +98,7 @@ std::vector<std::vector<int>> generate_followers_matrix(int num_users) {
         std::vector<int>(num_users, 0)
     );
 
-
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(123u);
 
 
     const int initial_links =

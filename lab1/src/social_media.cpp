@@ -108,11 +108,10 @@ void worker_function(
 
         int user_id = task.user_id;
 
-        // WCompute aggregated_features[user_id] = followers_matrix[user_id] × user_features
+        // Compute aggregated_features[user_id] = followers_matrix[user_id] × user_features
         std::vector<double> feature_sum(feature_dim, 0.0);
         double total_follows = compute_follower_counts(followers_matrix)[user_id]; // count of follows (used to normalize later)
-
-        // TODO: Fix numerical precision
+   
         for (int j = 0; j < feature_dim; j++) // all columns of Matrix B
         {
             double sum = 0;
@@ -147,9 +146,6 @@ void master_function(
     {
         int t = u % num_worker_threads;
         tasks_per_thread[t].push({u});
-
-        std::cout << "Master assigned user " << u
-                      << " to worker " << t << '\n';
     }
 
     // Spawn worker threads

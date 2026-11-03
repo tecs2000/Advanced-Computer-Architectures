@@ -31,10 +31,9 @@ std::vector<int> compute_follower_counts(const std::vector<std::vector<int>> &fo
 
 // Print top 5 and bottom 5 users based on follower counts
 void print_top_and_bottom_users(const std::vector<std::vector<int>> &followers_matrix,
-                                const std::vector<std::vector<double>> &aggregated_features)
+                                const std::vector<std::vector<double>> &aggregated_features,
+                                const std::vector<int> &follower_counts)
 {
-    // Compute follower counts
-    auto follower_counts = compute_follower_counts(followers_matrix);
 
     // Create a vector of (user_id, count) pairs
     std::vector<std::pair<int, int>> user_counts;
@@ -92,7 +91,8 @@ void worker_function(
     std::queue<Task> &tasks,
     const std::vector<std::vector<int>> &followers_matrix, // Matrix A
     const std::vector<std::vector<double>> &user_features, // Matrix B
-    std::vector<std::vector<double>> &aggregated_features  // Matrix C can be upgrade for thread private
+    std::vector<std::vector<double>> &aggregated_features,  // Matrix C can be upgrade for thread private
+    const std::vector<int> &follower_counts
 )
 {
     int feature_dim = (int)user_features[0].size(); // ncolumns Matrix B
@@ -110,7 +110,7 @@ void worker_function(
 
         // Compute aggregated_features[user_id] = followers_matrix[user_id] × user_features
         std::vector<double> feature_sum(feature_dim, 0.0);
-        double total_follows = compute_follower_counts(followers_matrix)[user_id]; // count of follows (used to normalize later)
+        double total_follows = follower_counts[user_id]; // count of follows (used to normalize later)
    
         for (int j = 0; j < feature_dim; j++) // all columns of Matrix B
         {
@@ -138,6 +138,7 @@ void master_function(
     const std::vector<std::vector<int>> &followers_matrix,
     const std::vector<std::vector<double>> &user_features,
     std::vector<std::vector<double>> &aggregated_features,
+    const std::vector<int> &follower_counts,
     std::vector<std::thread> &workers)
 {
 
@@ -156,7 +157,8 @@ void master_function(
             std::ref(tasks_per_thread[t]),
             std::cref(followers_matrix),
             std::cref(user_features),
-            std::ref(aggregated_features));
+            std::ref(aggregated_features),
+            std::cref(follower_counts));
     }
 }
 
@@ -187,6 +189,9 @@ int main(int argc, char *argv[])
     auto followers_matrix = generate_followers_matrix(num_users);
     auto user_features = generate_user_features(num_users, feature_dim);
     std::vector<std::vector<double>> aggregated_features(num_users, std::vector<double>(feature_dim, 0.0));
+    
+    // Compute follower counts
+    auto follower_counts = compute_follower_counts(followers_matrix);
 
     std::cout << "Finished matrice generation" << "\n";
 
@@ -224,7 +229,7 @@ int main(int argc, char *argv[])
     master_function(num_users, num_worker_threads,
                     tasks_per_thread,
                     followers_matrix, user_features,
-                    aggregated_features, workers);
+                    aggregated_features, follower_counts, workers);
 
     // Join all worker threads (wait for them to finish)
     for (auto &th : workers)
@@ -236,7 +241,7 @@ int main(int argc, char *argv[])
 
     // Show the result
     std::cout << "\nTotal worker computation time: " << elapsed.count() << " seconds\n";
-    print_top_and_bottom_users(followers_matrix, aggregated_features);
+    print_top_and_bottom_users(followers_matrix, aggregated_features, follower_counts);
 
     return 0;
 }

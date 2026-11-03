@@ -83,21 +83,25 @@ struct Task
     int user_id; // which user to process
 };
 
+struct Result
+{
+    int user_id;
+    std::vector<double> features;
+};
+
 // ----------------------
 // Worker function
 // ----------------------
 // Worker function: compute aggregated follower features for a user
 void worker_function(
     std::queue<Task> &tasks,
-    const std::vector<std::vector<int>> &followers_matrix, // Matrix A
-    const std::vector<std::vector<double>> &user_features, // Matrix B
-    std::vector<std::vector<double>> &aggregated_features,  // Matrix C can be upgrade for thread private
-    const std::vector<int> &follower_counts
-)
+    const std::vector<std::vector<int>> &followers_matrix,
+    const std::vector<std::vector<double>> &user_features,
+    std::vector<Result> &private_results,
+    const std::vector<int> &follower_counts)
 {
-    int feature_dim = (int)user_features[0].size(); // ncolumns Matrix B
-
-    assert((int)followers_matrix[0].size() == (int)user_features.size());
+    
+    int feature_dim = user_features[0].size();
     int n = (int)followers_matrix[0].size();
 
     while (!tasks.empty())
@@ -110,24 +114,24 @@ void worker_function(
 
         // Compute aggregated_features[user_id] = followers_matrix[user_id] × user_features
         std::vector<double> feature_sum(feature_dim, 0.0);
-        double total_follows = follower_counts[user_id]; // count of follows (used to normalize later)
-   
-        for (int j = 0; j < feature_dim; j++) // all columns of Matrix B
+        double total_follows = follower_counts[user_id];
+
+        for (int j = 0; j < feature_dim; j++)
         {
-            double sum = 0;
-            for (int k = 0; k < n; k++)       // all indexes
+            double sum = 0.0;
+
+            for (int k = 0; k < n; k++)
             {
-                sum += followers_matrix[user_id][k] * user_features[k][j];
+                sum += followers_matrix[user_id][k] *
+                       user_features[k][j];
             }
 
-            if (total_follows > 0.0)
-            {
+            if (total_follows > 0)
                 feature_sum[j] = sum / total_follows;
-            }
         }
 
-        // Compute average feature vector of followed users (if any)
-        aggregated_features[user_id] = feature_sum;
+        // Store the result in this thread's private output.
+        private_results.push_back({user_id, std::move(feature_sum)});
     }
 }
 
@@ -137,19 +141,25 @@ void master_function(
     std::vector<std::queue<Task>> &tasks_per_thread,
     const std::vector<std::vector<int>> &followers_matrix,
     const std::vector<std::vector<double>> &user_features,
-    std::vector<std::vector<double>> &aggregated_features,
     const std::vector<int> &follower_counts,
-    std::vector<std::thread> &workers)
+    std::vector<std::thread> &workers,
+    std::vector<std::vector<Result>> &private_results)
 {
 
-    // Fill the task queues (equally distributed load balance)
-    for (int u = 0; u < num_users; ++u)
+    // Exe 1.4 - Distribute tasks using contiguous chunks
+    for (int t = 0; t < num_worker_threads; ++t)
     {
-        int t = u % num_worker_threads;
-        tasks_per_thread[t].push({u});
+        int start = t * num_users / num_worker_threads;
+        int end = (t + 1) * num_users / num_worker_threads;
+
+        // Avoid reallocations while workers append results
+        private_results[t].reserve(end - start);
+
+        for (int u = start; u < end; ++u)
+            tasks_per_thread[t].push({u});
     }
 
-    // Spawn worker threads
+    // Spawn worker threads.
     for (int t = 0; t < num_worker_threads; ++t)
     {
         workers.emplace_back(
@@ -157,7 +167,7 @@ void master_function(
             std::ref(tasks_per_thread[t]),
             std::cref(followers_matrix),
             std::cref(user_features),
-            std::ref(aggregated_features),
+            std::ref(private_results[t]),
             std::cref(follower_counts));
     }
 }
@@ -188,13 +198,10 @@ int main(int argc, char *argv[])
     // Generate random followers matrix and user features
     auto followers_matrix = generate_followers_matrix(num_users);
     auto user_features = generate_user_features(num_users, feature_dim);
-    std::vector<std::vector<double>> aggregated_features(num_users, std::vector<double>(feature_dim, 0.0));
+    auto follower_counts = compute_follower_counts(followers_matrix); // Compute follower counts
     
-    // Compute follower counts
-    auto follower_counts = compute_follower_counts(followers_matrix);
-
     std::cout << "Finished matrice generation" << "\n";
-
+    
     std::cout << "Followers Matrix:" << "\n";
     for (int i = 0; i < num_users; i++)
     { // nlines
@@ -205,7 +212,7 @@ int main(int argc, char *argv[])
         std::cout << std::endl;
     }
     std::cout << std::endl;
-
+    
     std::cout << "Feature Dim:" << "\n";
     for (int i = 0; i < 3; i++)
     { // nlines
@@ -216,24 +223,41 @@ int main(int argc, char *argv[])
         std::cout << std::endl;
     }
     std::cout << std::endl;
-
+    
     // Tasks queue
     std::vector<std::queue<Task>> tasks_per_thread(num_worker_threads);
-
+    std::vector<std::vector<Result>> private_results(num_worker_threads);
+    
     // Shared synchronization primitives:
     std::vector<std::thread> workers;
-
+    
     // Timer
     auto start_time = std::chrono::high_resolution_clock::now();
-
-    master_function(num_users, num_worker_threads,
-                    tasks_per_thread,
-                    followers_matrix, user_features,
-                    aggregated_features, follower_counts, workers);
-
+    
+    master_function(
+        num_users,
+        num_worker_threads,
+        tasks_per_thread,
+        followers_matrix,
+        user_features,
+        follower_counts,
+        workers,
+        private_results
+    );
+    
     // Join all worker threads (wait for them to finish)
     for (auto &th : workers)
         th.join();
+    
+    // Concatenate the results
+    std::vector<std::vector<double>> aggregated_features(num_users, std::vector<double>(feature_dim, 0.0));
+    for (const auto &thread_results : private_results)
+    {
+        for (const auto &result : thread_results)
+        {
+            aggregated_features[result.user_id] = result.features;
+        }
+    }
 
     // Stop timer
     auto end_time = std::chrono::high_resolution_clock::now();
